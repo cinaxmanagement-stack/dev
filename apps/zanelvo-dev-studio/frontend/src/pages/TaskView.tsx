@@ -13,7 +13,7 @@ import { EmptyState } from "@/components/ui/EmptyState";
 import { PromptDialog } from "@/components/ui/PromptDialog";
 import { Tabs, TabsList, TabsTrigger, TabsContent } from "@/components/ui/Tabs";
 import type { Task, DiffSummary, PlanItem, TestRun } from "@/lib/types";
-import { CheckpointsPanel, PreviewPanel } from "./task-extra-panels";
+import { CheckpointsPanel, PreviewPanel, UploadsPanel } from "./task-extra-panels";
 
 const AGENT_ICON: Record<string, any> = {
   supervisor: Bot, repository_analyst: FileText, planner: FlagTriangleRight,
@@ -228,6 +228,7 @@ export default function TaskView({ taskId, onTaskChanged }: { taskId: string; on
           <TabsTrigger value="tests">tests</TabsTrigger>
           <TabsTrigger value="screenshots">shots</TabsTrigger>
           <TabsTrigger value="preview">preview</TabsTrigger>
+          <TabsTrigger value="uploads">uploads</TabsTrigger>
           <TabsTrigger value="checkpoints">checkpoints</TabsTrigger>
         </TabsList>
 
@@ -322,6 +323,10 @@ export default function TaskView({ taskId, onTaskChanged }: { taskId: string; on
 
         <TabsContent value="preview" className="flex-1 min-h-0">
           <PreviewPanel taskId={taskId} />
+        </TabsContent>
+
+        <TabsContent value="uploads" className="flex-1 min-h-0">
+          <UploadsPanel taskId={taskId} />
         </TabsContent>
 
         <TabsContent value="checkpoints" className="flex-1 min-h-0">

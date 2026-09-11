@@ -313,6 +313,7 @@ class Upload(BaseDocument):
     size_bytes: int
     path: str
     is_image: bool = False
+    attach_to_vision: bool = False
 
 
 class ActivityEvent(BaseDocument):

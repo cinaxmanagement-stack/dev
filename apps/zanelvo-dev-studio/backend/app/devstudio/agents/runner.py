@@ -14,7 +14,7 @@ from ...db import get_db
 from ..models import AgentConfiguration, AgentRole
 from ..providers.base import LLMResult, ProviderNotConfigured, ProviderNotImplemented
 from ..providers.registry import ModelRegistry
-from ..services import activity_service, usage_tracker
+from ..services import activity_service, provider_health, usage_tracker
 
 
 class AgentStepFailed(Exception):
@@ -83,10 +83,15 @@ def __oid(id_str: str):
 async def call_structured(registry: ModelRegistry, config: AgentConfiguration, task_id: str,
                            role: AgentRole, system: str, prompt: str, action: str,
                            plan_item_id: Optional[str] = None,
-                           max_tokens: int = 4096) -> Dict[str, Any]:
+                           max_tokens: int = 4096,
+                           images_b64: Optional[list] = None) -> Dict[str, Any]:
     """Runs the primary model; on ANY failure (including not-configured), falls back once if
     automatic_fallback is set. Every attempt is logged; the final failure raises AgentStepFailed
-    with a classification the Supervisor / capability report can use."""
+    with a classification the Supervisor / capability report can use.
+
+    If `images_b64` is supplied (task attachments flagged for vision) the call is sent as a
+    vision request to any attempt whose model supports vision; models that don't get the normal
+    text-only structured call, so a non-vision fallback still runs rather than hard-failing."""
     attempts = [(config.primary_provider, config.primary_model)]
     if config.automatic_fallback and config.fallback_provider and config.fallback_model:
         attempts.append((config.fallback_provider, config.fallback_model))
@@ -98,17 +103,31 @@ async def call_structured(registry: ModelRegistry, config: AgentConfiguration, t
         t0 = time.monotonic()
         try:
             provider = registry.get(provider_name)
-            result: LLMResult = await provider.generate_structured(
-                system=system, prompt=prompt, model=model, max_tokens=max_tokens)
+            if images_b64 and provider.supports_vision(model):
+                strict = (system + "\n\nRespond with ONLY a single valid JSON object/array. No "
+                          "prose, no markdown code fences.")
+                result: LLMResult = await provider.generate_with_vision(
+                    system=strict, prompt=prompt, model=model, images_b64=images_b64,
+                    max_tokens=max_tokens)
+                kind = "generate_with_vision"
+                await activity_service.emit(task_id, "vision_used",
+                                            {"role": role, "provider": provider_name,
+                                             "model": model, "image_count": len(images_b64)})
+            else:
+                result = await provider.generate_structured(
+                    system=system, prompt=prompt, model=model, max_tokens=max_tokens)
+                kind = "generate_structured"
             duration_ms = int((time.monotonic() - t0) * 1000)
             await usage_tracker.record_invocation(task_id, role, result, agent_run_id=run_id,
-                                                    kind="generate_structured")
+                                                    kind=kind)
+            await provider_health.record(provider_name, "ok")
             parsed = extract_json(result.text)
             await _finish_run(run_id, task_id, role, "succeeded", "ok", duration_ms)
             return parsed
         except ProviderNotConfigured as e:
             classification = "requires_credentials"
             last_err = e
+            await provider_health.record_exception(provider_name, e)
             await _finish_run(run_id, task_id, role, "failed", str(e), int((time.monotonic() - t0) * 1000))
         except ProviderNotImplemented as e:
             classification = "not_implemented"
@@ -117,6 +136,7 @@ async def call_structured(registry: ModelRegistry, config: AgentConfiguration, t
         except Exception as e:  # noqa: BLE001
             classification = "error"
             last_err = e
+            await provider_health.record_exception(provider_name, e)
             await _finish_run(run_id, task_id, role, "failed", f"{type(e).__name__}: {e}",
                                 int((time.monotonic() - t0) * 1000))
     raise AgentStepFailed(f"{role} step '{action}' failed on all configured models: {last_err}",

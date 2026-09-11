@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useState } from "react";
 import {
   Plus, FolderGit2, Brain, Bot, Github, Settings as SettingsIcon, ListTodo, LogOut, Sparkles,
+  AlertTriangle,
 } from "lucide-react";
 import devstudio from "@/lib/devstudio";
 import { toast } from "@/lib/toast";
@@ -17,6 +18,51 @@ import { RepoBrowser, MemoryPanel, AgentsPanel, GitHubPanel, SettingsPanel } fro
 import { NewProjectDialog, NewTaskDialog } from "./dialogs";
 
 type View = "task" | "repo" | "memory" | "agents" | "github" | "settings";
+
+function BalanceBanner() {
+  const [health, setHealth] = useState<any>(null);
+  useEffect(() => {
+    let alive = true;
+    const check = async () => {
+      try {
+        const { data } = await devstudio.providerHealth("emergent");
+        if (alive) setHealth(data);
+      } catch {
+        /* ignore */
+      }
+    };
+    check();
+    const t = setInterval(check, 30000);
+    return () => {
+      alive = false;
+      clearInterval(t);
+    };
+  }, []);
+
+  const banner = health && health.configured && ["insufficient_credit", "auth_error"].includes(health.status);
+  if (!banner) return null;
+  const isCredit = health.status === "insufficient_credit";
+  return (
+    <div
+      data-testid="universal-key-banner"
+      className={`flex items-center gap-2.5 px-4 py-2 text-xs border-b flex-shrink-0 ${
+        isCredit ? "bg-amber-500/15 border-amber-500/30 text-amber-100"
+                 : "bg-red-500/15 border-red-500/30 text-red-100"
+      }`}
+    >
+      <AlertTriangle className="w-4 h-4 flex-shrink-0" />
+      <span className="font-medium">
+        {isCredit ? "Emergent Universal Key is out of runtime balance." : "Emergent Universal Key authentication failed."}
+      </span>
+      <span className="text-white/70 truncate">{health.detail}</span>
+      {isCredit && (
+        <span className="ml-auto text-white/80 whitespace-nowrap">
+          Add balance: Profile → Manage plan → Universal Key → Add Balance
+        </span>
+      )}
+    </div>
+  );
+}
 
 const NAV_ITEMS = [
   ["repo", FolderGit2, "Repository"],
@@ -101,7 +147,9 @@ export default function DevStudioApp() {
   const currentProject = projects.find((p) => p.id === projectId);
 
   return (
-    <div className="h-screen w-screen flex bg-surface-0 text-white overflow-hidden">
+    <div className="h-screen w-screen flex flex-col bg-surface-0 text-white overflow-hidden">
+      <BalanceBanner />
+      <div className="flex flex-1 min-h-0">
       {/* LEFT SIDEBAR */}
       <aside className="w-72 flex-shrink-0 flex flex-col border-r border-white/10 bg-surface-1">
         <div className="h-14 flex items-center gap-2.5 px-4 border-b border-white/10 flex-shrink-0">
@@ -233,6 +281,7 @@ export default function DevStudioApp() {
         {view === "agents" && <AgentsPanel />}
         {view === "github" && <GitHubPanel />}
         {view === "settings" && <SettingsPanel />}
+      </div>
       </div>
 
       <NewProjectDialog

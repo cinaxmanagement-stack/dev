@@ -73,6 +73,23 @@ def test_error_normalization_maps_known_categories():
     assert _normalize_error(Exception("some weird upstream blip")).code == "PROVIDER_ERROR"
 
 
+def test_error_normalization_detects_insufficient_credit():
+    for msg in ("insufficient balance", "402 Payment Required", "out of credit",
+                "storage_quota_exceeded budget", "billing issue"):
+        err = _normalize_error(Exception(msg))
+        assert isinstance(err, ProviderError) and err.code == "INSUFFICIENT_CREDIT", msg
+
+
+def test_provider_health_classify_exception():
+    from app.devstudio.services.provider_health import classify_exception
+
+    credit = ProviderError("INSUFFICIENT_CREDIT", "no balance")
+    assert classify_exception(credit)[0] == "insufficient_credit"
+    assert classify_exception(ProviderNotConfigured("bad key"))[0] == "auth_error"
+    assert classify_exception(ProviderError("RATE_LIMIT", "slow down"))[0] == "error"
+    assert classify_exception(ValueError("boom"))[0] == "error"
+
+
 def test_normalized_errors_never_leak_the_key():
     # The raw text carries a secret-looking token; the normalized message must not echo it.
     fake_secret = "sk-emergent-FAKE0000deadbeef0000"

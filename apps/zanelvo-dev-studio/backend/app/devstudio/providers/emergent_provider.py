@@ -120,6 +120,13 @@ def _normalize_error(exc: Exception) -> Exception:
             "Emergent Universal Key was rejected (authentication failed). Verify EMERGENT_UNIVERSAL_KEY "
             "or the stored emergent_universal_key secret is valid and has runtime balance."
         )
+    if any(k in low for k in ("insufficient", "no balance", "out of credit", "credit", "budget",
+                              "payment required", "402", "quota", "billing")):
+        return ProviderError(
+            "INSUFFICIENT_CREDIT",
+            "Emergent Universal Key has no runtime balance. Add credit (Profile → Manage plan → "
+            "Universal Key → Add Balance) and retry.",
+        )
     if any(k in low for k in ("rate limit", "rate_limit", "429", "too many requests")):
         code = "RATE_LIMIT"
     elif any(k in low for k in ("context length", "context_length", "maximum context",
@@ -136,6 +143,21 @@ def _normalize_error(exc: Exception) -> Exception:
         code = "PROVIDER_ERROR"
     # Strip anything that could echo a key back; keep only a short, safe classification.
     return ProviderError(code, f"Emergent provider call failed ({code}).")
+
+
+def _unsupported_param(msg: str, params: Dict[str, Any]) -> Optional[str]:
+    """If an error says a specific param isn't supported by this model, return which param in
+    `params` to drop for a retry (or None). Newer Universal-Key models reject params older ones
+    accept; this lets one provider serve them all without hardcoding per-model param tables."""
+    low = msg.lower()
+    if "unsupported" not in low and "not supported" not in low and "only temperature" not in low:
+        return None
+    # Order matters: temperature phrasing ("only temperature=1 is supported") also contains the
+    # word "temperature"; check each candidate that's actually present in the request.
+    for name in ("temperature", "max_tokens", "reasoning_effort"):
+        if name in params and name in low:
+            return name
+    return None
 
 
 class EmergentUniversalKeyProvider(LLMProvider):
@@ -196,30 +218,49 @@ class EmergentUniversalKeyProvider(LLMProvider):
             duration_ms=duration_ms,
         )
 
+    async def _send(self, *, system: str, model: str, user_message, params: Dict[str, Any]):
+        """Send one request, adapting to what THIS model actually accepts. Newer families reject
+        certain params (e.g. Claude-5/GPT-5 only allow the default temperature; GPT-6 rejects
+        `max_tokens`) and litellm's own drop_params doesn't catch them through the Universal Key
+        proxy — so when the model reports an unsupported param, drop that one and retry (bounded)."""
+        _LlmChat, _UserMessage, _ImageContent, ChatError = _sdk()
+        params = dict(params)
+        last: Optional[Exception] = None
+        for _ in range(len(params) + 1):
+            chat = self._chat(system=system, model=model)
+            if params:
+                chat = chat.with_params(**params)
+            try:
+                return await chat.send_message_with_tools(user_message)
+            except ChatError as e:
+                last = e
+                drop = _unsupported_param(str(e), params)
+                if drop is None:
+                    raise _normalize_error(e) from e
+                params.pop(drop, None)
+        raise _normalize_error(last) from last  # pragma: no cover
+
+    def _floor_tokens(self, max_tokens: int) -> int:
+        # A tiny output budget makes reasoning models spend it all on hidden thinking and return
+        # empty/incomplete output; enforce a small floor across all families.
+        return max(max_tokens, 64)
+
     # --- generation ---------------------------------------------------------------------------
     async def generate(self, *, system: str, prompt: str, model: str,
                         max_tokens: int = 4096, temperature: float = 0.2,
                         reasoning_level: Optional[str] = None) -> LLMResult:
-        _LlmChat, UserMessage, _ImageContent, ChatError = _sdk()
-        chat = self._chat(system=system, model=model)
+        _LlmChat, UserMessage, _ImageContent, _ChatError = _sdk()
         family = self._family(model)
-        # Gemini can spend a very small output budget entirely on internal reasoning and return no
-        # visible text; give it a small floor so trivial/low-max_tokens calls still yield content.
-        if family == "gemini":
-            max_tokens = max(max_tokens, 64)
-        params: Dict[str, Any] = {"max_tokens": max_tokens, "temperature": temperature}
-        # reasoning_effort is a first-class Chat-Completions param on OpenAI-family reasoning models;
-        # only attach it there to avoid non-reasoning models rejecting an unknown field.
-        if (reasoning_level and self.supports_reasoning_levels(model)
-                and family == "openai"):
+        # NOTE: temperature is deliberately NOT sent — several Universal-Key model families only
+        # accept their default temperature, and determinism for structured output is enforced by
+        # strict-JSON prompting, not sampling temperature.
+        params: Dict[str, Any] = {"max_tokens": self._floor_tokens(max_tokens)}
+        if reasoning_level and self.supports_reasoning_levels(model) and family == "openai":
             params["reasoning_effort"] = {"low": "low", "medium": "medium",
                                           "high": "high"}.get(reasoning_level, "medium")
-        chat = chat.with_params(**params)
         t0 = time.monotonic()
-        try:
-            resp = await chat.send_message_with_tools(UserMessage(text=prompt))
-        except ChatError as e:
-            raise _normalize_error(e) from e
+        resp = await self._send(system=system, model=model,
+                                user_message=UserMessage(text=prompt), params=params)
         dur = int((time.monotonic() - t0) * 1000)
         return LLMResult(text=resp.content or "", usage=self._usage(resp.usage, dur),
                          model=model, provider=self.name)
@@ -237,26 +278,21 @@ class EmergentUniversalKeyProvider(LLMProvider):
         if json_schema:
             strict_system += f"\n\nThe JSON MUST conform to this schema:\n{json_schema}"
         return await self.generate(system=strict_system, prompt=prompt, model=model,
-                                   max_tokens=max_tokens, temperature=0.0)
+                                   max_tokens=max_tokens)
 
     async def generate_with_vision(self, *, system: str, prompt: str, model: str,
                                     images_b64: List[str], max_tokens: int = 4096) -> LLMResult:
         if not self.supports_vision(model):
             raise ProviderError("INVALID_REQUEST",
                                 f"Model '{model}' does not support vision input.")
-        _LlmChat, UserMessage, ImageContent, ChatError = _sdk()
-        if self._family(model) == "gemini":
-            max_tokens = max(max_tokens, 64)
-        chat = self._chat(system=system, model=model).with_params(max_tokens=max_tokens)
+        _LlmChat, UserMessage, ImageContent, _ChatError = _sdk()
         user_msg = UserMessage(
             text=prompt,
             file_contents=[ImageContent(image_base64=img) for img in images_b64],
         )
         t0 = time.monotonic()
-        try:
-            resp = await chat.send_message_with_tools(user_msg)
-        except ChatError as e:
-            raise _normalize_error(e) from e
+        resp = await self._send(system=system, model=model, user_message=user_msg,
+                                params={"max_tokens": self._floor_tokens(max_tokens)})
         dur = int((time.monotonic() - t0) * 1000)
         return LLMResult(text=resp.content or "", usage=self._usage(resp.usage, dur),
                          model=model, provider=self.name)

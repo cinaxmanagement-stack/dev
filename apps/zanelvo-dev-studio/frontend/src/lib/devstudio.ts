@@ -68,6 +68,18 @@ export const devstudio = {
   openPr: (id: string, title?: string, body?: string) => api.post(`${base}/tasks/${id}/pr`, { title, body }),
   usage: (id: string) => api.get(`${base}/tasks/${id}/usage`),
 
+  taskUploads: (id: string) => api.get(`${base}/tasks/${id}/uploads`),
+  uploadFile: (id: string, file: File) => {
+    const form = new FormData();
+    form.append("file", file);
+    return api.post(`${base}/tasks/${id}/uploads`, form);
+  },
+  setUploadVision: (uploadId: string, attach: boolean) =>
+    api.put(`${base}/uploads/${uploadId}/vision`, { attach }),
+  uploadDownloadUrl: (uploadId: string) =>
+    `${window.location.origin}/api${base}/uploads/${uploadId}/download`,
+  providerHealth: (provider: string) => api.get(`${base}/providers/${provider}/health`),
+
   previewLiveLocal: (id: string, subdir = "frontend") =>
     api.post(`${base}/tasks/${id}/preview/live-local`, { subdir }),
   previewStop: (id: string) => api.post(`${base}/tasks/${id}/preview/stop`),

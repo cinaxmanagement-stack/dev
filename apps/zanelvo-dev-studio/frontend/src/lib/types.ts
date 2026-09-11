@@ -72,3 +72,13 @@ export interface MemoryItem {
   content: string;
   stale?: boolean;
 }
+
+
+export interface Upload {
+  id: string;
+  filename: string;
+  content_type: string;
+  size_bytes: number;
+  is_image: boolean;
+  attach_to_vision: boolean;
+}

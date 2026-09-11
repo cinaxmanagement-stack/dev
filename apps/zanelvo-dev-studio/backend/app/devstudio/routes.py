@@ -17,8 +17,8 @@ from .providers import registry as provider_registry
 from .security import require_devstudio_access, require_devstudio_write
 from .services import (activity_service, browser_service, checkpoint_service, execution_service,
                          github_provider, indexer, memory_service, preview_service,
-                         repository_service, settings_service, task_manager, upload_service,
-                         usage_tracker, workspace_manager)
+                         provider_health, repository_service, settings_service, task_manager,
+                         upload_service, usage_tracker, workspace_manager)
 from .services.diff_service import get_diff_summary
 from .services.file_service import FileService
 
@@ -143,6 +143,7 @@ async def test_provider_model(body: ProviderTestRequest, user: str = Depends(req
             max_tokens=8,
             temperature=0.0,
         )
+        await provider_health.record(body.provider, "ok")
         return {
             "ok": True,
             "provider": body.provider,
@@ -152,12 +153,14 @@ async def test_provider_model(body: ProviderTestRequest, user: str = Depends(req
             "usage": {"input_tokens": result.usage.input_tokens, "output_tokens": result.usage.output_tokens},
         }
     except ProviderNotConfigured as e:
+        await provider_health.record_exception(body.provider, e)
         return {"ok": False, "provider": body.provider, "model": body.model,
                  "error_type": "not_configured", "detail": str(e)}
     except ProviderNotImplemented as e:
         return {"ok": False, "provider": body.provider, "model": body.model,
                  "error_type": "not_implemented", "detail": str(e)}
     except Exception as e:  # noqa: BLE001 — a failed test call is a result to display, not a 500
+        await provider_health.record_exception(body.provider, e)
         return {"ok": False, "provider": body.provider, "model": body.model,
                  "error_type": "error", "detail": str(e)[:500],
                  "latency_ms": int((time.monotonic() - t0) * 1000)}
@@ -631,3 +634,36 @@ async def download_upload(upload_id: str, user: str = Depends(require_devstudio_
     data = await upload_service.read_upload_bytes(up)
     return Response(content=data, media_type=up.content_type,
                     headers={"Content-Disposition": f'inline; filename="{up.filename}"'})
+
+
+class VisionAttachBody(BaseModel):
+    attach: bool
+
+
+@router.put("/uploads/{upload_id}/vision")
+async def set_upload_vision(upload_id: str, body: VisionAttachBody,
+                            user: str = Depends(require_devstudio_write)):
+    """Flag/unflag an image upload for delivery to the Design agent's vision model (on request)."""
+    try:
+        up = await upload_service.set_vision_attachment(upload_id, body.attach)
+    except upload_service.UploadRejected as e:
+        raise HTTPException(400, str(e))
+    if up is None:
+        raise HTTPException(404, "Upload not found")
+    return up.model_dump()
+
+
+@router.get("/providers/{provider}/health")
+async def provider_health_status(provider: str, user: str = Depends(require_devstudio_access)):
+    """Last-observed runtime status of a provider from REAL calls (used by the Universal Key
+    balance banner). `configured` reflects whether a credential/key is currently set."""
+    secret_map = {"emergent": "emergent_universal_key", "anthropic": "anthropic_api_key",
+                  "openai": "openai_api_key", "gemini": "gemini_api_key"}
+    configured = False
+    if provider in secret_map:
+        configured = bool(await settings_service.get_secret(secret_map[provider]))
+    health = await provider_health.get(provider)
+    return {"provider": provider, "configured": configured,
+            "status": (health or {}).get("status"),
+            "detail": (health or {}).get("detail", ""),
+            "checked_at": (health or {}).get("checked_at")}
