@@ -51,7 +51,11 @@ app.include_router(devstudio_routes.router)
 # not in this map still becomes a clean JSON 500 — FastAPI's default unhandled-exception response
 # is plain text, which would break every frontend call site that reads `error.response.data.detail`.
 def _status_for(exc: Exception) -> int:
-    from app.devstudio.providers.base import ProviderNotConfigured, ProviderNotImplemented
+    from app.devstudio.providers.base import (
+        ProviderError,
+        ProviderNotConfigured,
+        ProviderNotImplemented,
+    )
     from app.devstudio.services.checkpoint_service import RestoreNotConfirmed
     from app.devstudio.services.execution_service import CommandBlocked
     from app.devstudio.services.file_service import PathEscapeError, StalePatchError
@@ -74,6 +78,8 @@ def _status_for(exc: Exception) -> int:
         return 400
     if isinstance(exc, (ProviderNotConfigured, ProviderNotImplemented)):
         return 424  # Failed Dependency — a configuration gap, not a server bug
+    if isinstance(exc, ProviderError):
+        return 502  # a normalized upstream provider failure (rate limit, timeout, etc.)
     if isinstance(exc, (GitError, GitHubError)):
         return 502  # the upstream git/GitHub operation failed
     if isinstance(exc, (ValueError, FileNotFoundError, FileExistsError)):

@@ -5,6 +5,11 @@
 #   pip install -r requirements-devstudio.txt
 #   python -m playwright install --with-deps chromium   # first time only, for browser QA
 #
+# Emergent Universal Key transport (GPT/Claude/Gemini behind one key). Ships from Emergent's CDN
+# wheel index, NOT PyPI — install with the extra index URL:
+#   pip install emergentintegrations --extra-index-url https://d33sy5i8bnduwe.cloudfront.net/simple/
+# Lazily imported in providers/emergent_provider.py so the app boots without it.
+emergentintegrations
 anthropic==0.69.0
 openai==1.109.1
 # Also covers GeminiEnterpriseProvider (Vertex AI / Gemini Enterprise Agent Platform) — same SDK,

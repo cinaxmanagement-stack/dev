@@ -619,3 +619,15 @@ async def upload_file(task_id: str, file: UploadFile, user: str = Depends(requir
 async def list_uploads(task_id: str, user: str = Depends(require_devstudio_access)):
     await _require_task(task_id)
     return {"uploads": [u.model_dump() for u in await upload_service.list_uploads(task_id)]}
+
+
+@router.get("/uploads/{upload_id}/download")
+async def download_upload(upload_id: str, user: str = Depends(require_devstudio_access)):
+    from starlette.responses import Response
+
+    up = await upload_service.get_upload(upload_id)
+    if not up:
+        raise HTTPException(404, "Upload not found")
+    data = await upload_service.read_upload_bytes(up)
+    return Response(content=data, media_type=up.content_type,
+                    headers={"Content-Disposition": f'inline; filename="{up.filename}"'})

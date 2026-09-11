@@ -1,0 +1,33 @@
+{
+  "summary": "Backend tests for the Emergent Universal Key integration in Zanelvo Dev Studio. 8/9 tests passed. Auth cookie login, model discovery (12 emergent models across GPT/Claude/Gemini families with correct metadata), live provider calls for claude-sonnet-4-6 and gpt-5.4, error normalization for unknown models (200 + ok=false + error_type='error', no key leakage), per-role agent config persistence with independent emergent models (planner=gpt-5.4, reviewer=claude-opus-5), and settings secret non-leakage — all pass. Only gemini-2.5-flash live test fails: it returns ok=true with usage tokens > 0 but response_text is empty ('').",
+  "backend_issues": {
+    "critical": [],
+    "minor": [
+      {
+        "endpoint": "POST /api/devstudio/providers/test",
+        "issue": "For {provider:'emergent', model:'gemini-2.5-flash'} the call returns ok=true with input_tokens=24, output_tokens=5, BUT response_text='' (empty). Reproduced 3x deterministically. Likely because /providers/test uses max_tokens=8, temperature=0 and the connectivity prompt; Gemini 2.5 Flash appears to spend its tiny budget on internal/thinking tokens and returns no visible content parts. Other two models (claude-sonnet-4-6, gpt-5.4) return proper text. Review-request requires 'non-empty response_text' for all three. Suggested fix in emergent_provider.generate() for gemini family: raise the test-call max_tokens floor (or in routes.py /providers/test raise max_tokens above 8 for gemini family) and/or verify that emergentintegrations content extraction is capturing all candidate parts for gemini responses. Priority: MEDIUM."
+      }
+    ]
+  },
+  "frontend_issues": {"ui_bugs": [], "integration_issues": [], "design_issues": []},
+  "test_report_links": [
+    "/app/backend/tests/backend_test.py",
+    "/app/test_reports/pytest/pytest_results.xml"
+  ],
+  "action_items": [
+    "Investigate why gemini-2.5-flash returns empty response_text via /providers/test despite ok=true and non-zero usage. Options: (a) raise the connectivity-test max_tokens beyond 8 for the gemini family (currently the test call hardcodes max_tokens=8 in routes.py:143 which is likely below Gemini 2.5's minimum visible-output budget after reasoning), or (b) ensure the emergentintegrations response accessor concatenates all Gemini candidate content parts, not just .content. Every other assertion in the review request passes."
+  ],
+  "critical_code_review_comments": [
+    "routes.py /providers/test hardcodes max_tokens=8 for every provider — too tight for Gemini 2.5, causing empty response_text with non-zero output_tokens. Consider provider/family-aware minimums (e.g., 32-64 tokens for gemini).",
+    "emergent_provider._normalize_error correctly avoids leaking key material; verified 'sk-emergent-' never appears in error responses.",
+    "Static catalog in emergent_provider.py has 12 unique IDs spanning three families — matches review-request requirement."
+  ],
+  "updated_files": ["/app/backend/tests/backend_test.py"],
+  "success_rate": {"backend": "89% (8/9)", "frontend": "not tested (out of scope)"},
+  "test_credentials": "Admin password 'devstudio-admin' via POST /api/auth/login (HttpOnly cookie).",
+  "seed_data_creation": "None. Tests only mutate /agents/config for planner and reviewer roles.",
+  "retest_needed": true,
+  "should_main_agent_self_test": true,
+  "context_for_next_testing_agent": "All emergent-provider surface passes except the gemini-2.5-flash live /providers/test which returns response_text=''. Fix is likely in routes.py:143 (bump max_tokens for gemini family) or in the emergentintegrations gemini content extraction. Test suite at /app/backend/tests/backend_test.py — rerun with `pytest /app/backend/tests/backend_test.py -v`. Live tests make real network calls to Emergent proxy; ~5s total runtime.",
+  "rca of the issue": "Reproduction: POST /api/devstudio/providers/test with {provider:'emergent',model:'gemini-2.5-flash'} -> 200 {ok:true, response_text:'', usage:{input_tokens:24,output_tokens:5}}. Repro rate 3/3. RCA: /providers/test route (routes.py L136-153) invokes provider.generate with max_tokens=8. Gemini 2.5 Flash appears to consume that budget on internal reasoning/thinking tokens (litellm.drop_params=True keeps the request valid), leaving zero tokens for visible text — resulting in output_tokens=5 but empty content. GPT-5.4 and Claude Sonnet 4.6 don't hit this because they don't spend hidden reasoning tokens on a trivial one-word prompt. Mitigation: raise the connectivity-test max_tokens (32-64) or add family-specific floor when family=='gemini'."
+}

@@ -50,6 +50,17 @@ class ProviderNotImplemented(Exception):
     a missing credential."""
 
 
+class ProviderError(Exception):
+    """Normalized provider/runtime failure. `code` is one of a small stable set
+    (MODEL_UNAVAILABLE, RATE_LIMIT, CONTEXT_TOO_LARGE, INVALID_REQUEST, PROVIDER_TIMEOUT,
+    PROVIDER_ERROR) so callers/UI can react uniformly regardless of vendor. Messages are kept
+    secret-safe — never echo the API/Universal key or raw upstream payloads."""
+
+    def __init__(self, code: str, message: str):
+        super().__init__(message)
+        self.code = code
+
+
 class LLMProvider(ABC):
     """One implementation per vendor. Every method is real (never fakes success)."""
 

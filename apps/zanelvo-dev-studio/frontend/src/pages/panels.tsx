@@ -255,7 +255,7 @@ export function AgentsPanel() {
 
   function modelOptions(provider: string) {
     const models = modelsByProvider[provider] || [];
-    if (!models.length) return [{ value: "", label: provider === "emergent" ? "(stub — no models yet)" : "(no models)" }];
+    if (!models.length) return [{ value: "", label: "(no models)" }];
     return models.map((m) => ({ value: m.id, label: m.label }));
   }
 

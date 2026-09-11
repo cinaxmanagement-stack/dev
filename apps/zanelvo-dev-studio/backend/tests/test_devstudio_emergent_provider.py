@@ -1,0 +1,81 @@
+"""Deterministic, network-free tests for EmergentUniversalKeyProvider — mirrors the pattern of
+test_devstudio_registry.py (no DB, no live provider calls). Live round-trips are covered separately
+by tests/manual_emergent_live.py, which needs a real Universal Key + network."""
+import asyncio
+
+import pytest
+
+from app.devstudio.providers.base import ProviderError, ProviderNotConfigured
+from app.devstudio.providers.emergent_provider import (
+    _CATALOG,
+    _normalize_error,
+    EmergentUniversalKeyProvider,
+)
+
+_ALLOWED_FAMILIES = {"openai", "anthropic", "gemini"}
+
+
+def test_list_models_non_empty_and_all_emergent():
+    models = EmergentUniversalKeyProvider(None).list_models()
+    assert models, "expected a static Universal Key catalog even before a key is configured"
+    assert all(m.provider == "emergent" for m in models)
+    # No duplicate model IDs (no fabricated/repeated entries).
+    ids = [m.id for m in models]
+    assert len(ids) == len(set(ids))
+
+
+def test_catalog_families_are_real_providers():
+    assert all(m["family"] in _ALLOWED_FAMILIES for m in _CATALOG)
+
+
+def test_capabilities_are_reported_from_catalog_not_faked():
+    p = EmergentUniversalKeyProvider(None)
+    # A known vision model and a known non-reasoning model, straight from the catalog.
+    assert p.supports_vision("gpt-6-astra") is True
+    assert p.supports_reasoning_levels("gpt-5.4-mini") is False
+    assert p.supports_reasoning_levels("claude-opus-5") is True
+    # An unknown model reports no capabilities (never fabricates a True).
+    assert p.supports_vision("not-a-real-model") is False
+
+
+def test_generate_without_key_raises_not_configured():
+    p = EmergentUniversalKeyProvider(None)
+    with pytest.raises(ProviderNotConfigured):
+        asyncio.run(p.generate(system="s", prompt="p", model="gpt-5.4"))
+
+
+def test_unknown_model_maps_to_model_unavailable():
+    # A key is present so we get past the credential check; the unknown-model guard fires before
+    # any network call.
+    p = EmergentUniversalKeyProvider(universal_key="sk-emergent-test-not-real")
+    with pytest.raises(ProviderError) as ei:
+        asyncio.run(p.generate(system="s", prompt="p", model="totally-unknown-model"))
+    assert ei.value.code == "MODEL_UNAVAILABLE"
+
+
+def test_vision_on_non_vision_model_is_invalid_request():
+    p = EmergentUniversalKeyProvider(universal_key="sk-emergent-test-not-real")
+    # gpt-5.4-mini supports vision in our catalog, so use an unknown id to force the guard:
+    # supports_vision(unknown) is False → INVALID_REQUEST before any network call.
+    with pytest.raises(ProviderError) as ei:
+        asyncio.run(p.generate_with_vision(system="s", prompt="p", model="unknown-x",
+                                           images_b64=["abc"]))
+    assert ei.value.code == "INVALID_REQUEST"
+
+
+def test_error_normalization_maps_known_categories():
+    assert isinstance(_normalize_error(Exception("Invalid API key provided")), ProviderNotConfigured)
+    assert isinstance(_normalize_error(Exception("401 Unauthorized")), ProviderNotConfigured)
+    assert _normalize_error(Exception("429 rate limit exceeded")).code == "RATE_LIMIT"
+    assert _normalize_error(Exception("maximum context length is 8000 tokens")).code == "CONTEXT_TOO_LARGE"
+    assert _normalize_error(Exception("request timed out")).code == "PROVIDER_TIMEOUT"
+    assert _normalize_error(Exception("model not found")).code == "MODEL_UNAVAILABLE"
+    assert _normalize_error(Exception("some weird upstream blip")).code == "PROVIDER_ERROR"
+
+
+def test_normalized_errors_never_leak_the_key():
+    # The raw text carries a secret-looking token; the normalized message must not echo it.
+    fake_secret = "sk-emergent-FAKE0000deadbeef0000"
+    err = _normalize_error(Exception(f"boom {fake_secret} internal detail"))
+    assert fake_secret not in str(err)
+    assert "internal detail" not in str(err)
